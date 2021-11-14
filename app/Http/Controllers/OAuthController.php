@@ -2,9 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Event;
 use App\User;
-use Auth;
 use Guzzle;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -22,7 +20,7 @@ class OAuthController extends Controller
             'scope' => '',
             'state' => $state,
         ]);
-        return redirect('http://osu.ppy.sh/oauth/authorize?'.$query);
+        return redirect(config('app.osu_base_url').'/oauth/authorize?'.$query);
     }
 
     public function getUserData(Request $request)
@@ -35,7 +33,7 @@ class OAuthController extends Controller
         }
 
         try {
-            $response = Guzzle::post('http://osu.ppy.sh/oauth/token', [
+            $response = Guzzle::post(config('app.osu_base_url').'/oauth/token', [
                 'form_params' => [
                     'grant_type' => 'authorization_code',
                     'client_id' => env('OSU_API_CLIENT_ID'),
@@ -52,7 +50,7 @@ class OAuthController extends Controller
         $data = json_decode((string) $response->getBody(), true);
         $token = $data['access_token'];
 
-        $userData = Guzzle::get('https://osu.ppy.sh/api/v2/me', [
+        $userData = Guzzle::get(config('app.osu_base_url').'/api/v2/me', [
             'headers' => [
                 'Accept' => 'application/json',
                 'Authorization' => 'Bearer '.$token,
@@ -61,38 +59,19 @@ class OAuthController extends Controller
 
         $userApi = json_decode((string) $userData->getBody(), true);
 
-        $osuUserId = $userApi['id'];
-        $username = $userApi['username'];
+        $groupIds = array_column($userApi['groups'], 'id');
+        $isNat = in_array(7, $groupIds, true);
 
-        $viableGroupids = [7, 28, 32];
-        $isBnOrNat = false;
+        $user = User::firstOrNew(['osu_id' => $userApi['id']]);
+        $user
+            ->fill([
+                'isNat' => $isNat,
+                'isNominator' => $isNat || in_array(28, $groupIds, true) || in_array(32, $groupIds, true),
+                'username' => $userApi['username'],
+            ])
+            ->save();
 
-        foreach ($viableGroupids as $id) {
-            if (in_array($id, array_column($userApi['groups'], 'id'))) {
-                $isBnOrNat = true;
-                break;
-            }
-        }
-
-        $user = User::where('osu_id', $osuUserId)->first();
-
-        if ($user === null) {
-            User::create([
-                'isNominator' => $isBnOrNat,
-                'osu_id' => $osuUserId,
-                'username' => $username,
-            ]);
-
-            return redirect('/login');
-        }
-
-        if ($isBnOrNat === true) {
-            $user->update([
-                'isNominator' => true,
-            ]);
-        }
-
-        Auth::login($user);
+        auth()->login($user);
 
         return redirect('/');
     }
